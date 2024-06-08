@@ -11,6 +11,7 @@ class State:
         self.num_states = env_param.UE_num + 1   # 状态空间大小
         self.AoI = np.ones(env_param.UE_num)  # AoI
         self.weight = np.random.uniform(0, 1, env_param.UE_num)  # 权重
+        print("weight:", self.weight)
         self.istran = 0 # 是否是传输状态，0代表没有传输，1代表传输
 
     def to_ndarray_normalized(self):
@@ -75,7 +76,7 @@ class Action:
         distance_index = total_index % len(self.distance)
 
         # 查找原始值
-        action = [self.beam_width[beam_index], self.start_position[start_index], self.distance[distance_index]]
+        action = [self.beam_width[beam_index], self.start_position[start_index], self.distance[distance_index], 0]
         return action
 
     # def one_hot_to_action(self, one_hot_vector):
@@ -105,7 +106,7 @@ def test_action_class():
     action_instance = Action(env_param)
 
     # 定义一个测试动作
-    test_action = [15, 30, 20, 1]
+    test_action = [15, 30, 20, 0]
 
     # 测试 action_to_one_hot 和 one_hot_to_action
     one_hot = action_instance.action_to_one_hot(test_action)
@@ -119,8 +120,8 @@ def test_action_class():
 
 
 # 执行测试函数
-# if __name__ == "__main__":
+if __name__ == "__main__":
 
-#     test_action_class()
+    test_action_class()
 
 

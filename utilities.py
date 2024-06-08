@@ -53,11 +53,11 @@ def find_min_snr_node(nodes, base_station, direction, beamwidth, distance, alpha
         # print("Node with minimum SNR:", min_snr_node)
         # print("Minimum SNR:", min_snr)
         # print("Data rate:", data_rate)
-        # print("Covered nodes:", covered)
+        print("Covered nodes:", covered)
 
         return min_snr_node, min_snr, covered, data_rate
     else:
-        #cprint("No node found within the beam boundaries.")
+        print("No node found within the beam boundaries.")
         return None, None, None, None
     
 def set_seed(seed):

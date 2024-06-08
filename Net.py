@@ -16,6 +16,7 @@ class RolloutBuffer:
         self.indicators = []
         self.loss = []
         self.ave_AoI_each_epoch = []
+        self.is_terminals = []
 
     def clear(self):
         del self.actions[:]
@@ -26,6 +27,7 @@ class RolloutBuffer:
         del self.indicators[:]
         del self.loss[:]
         del self.ave_AoI_each_epoch[:]
+        del self.is_terminals[:]
 
 def orthogonal_init(layer, gain=1.0):
     if isinstance(layer, nn.Linear):
@@ -44,16 +46,11 @@ class ActorCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
             nn.Linear(hidden_dim, action_dim),
-            nn.Tanh(),
             nn.Softmax(dim=-1)
         )
         self.critic = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.Tanh(),
@@ -73,10 +70,17 @@ class ActorCritic(nn.Module):
         
         # 生成一个动作概率分布
         action_probs = self.actor(state)
+        # print('action_probs:', action_probs)
         # 确保 mask 在与 action_probs 相同的设备上
         mask = mask.to(action_probs.device)
 
         action_probs = action_probs * mask + 1e-18
+        # print('mask_action_probs:', action_probs)
+        # 归一化
+        action_probs = action_probs / action_probs.sum()
+        
+        
+
         # 生成一个分布
         dist = Categorical(action_probs)
         # action index
@@ -88,6 +92,22 @@ class ActorCritic(nn.Module):
         state_val = self.critic(state)
             
         return action.detach(), action_logprob.detach(), state_val.detach()
+    
+    def act_max(self, state, mask):
+        # 生成一个动作概率分布
+        action_probs = self.actor(state)
+        # 确保 mask 在与 action_probs 相同的设备上
+        mask = mask.to(action_probs.device)
+        action_probs = action_probs * mask + 1e-18
+        # 生成一个分布
+        dist = Categorical(action_probs)
+        # action index
+        action = torch.argmax(action_probs)
+        # 采取这个动作的概率的对数
+        action_logprob = dist.log_prob(action)
+        state_val = self.critic(state)
+        return action.detach(), action_logprob.detach(), state_val.detach()
+    
     # 评估需要回传的参数
     def evaluate(self, state, action):
         action_probs = self.actor(state)
@@ -105,6 +125,8 @@ class PPO:
         self.eps_clip = eps_clip
         self.K_epochs = K_epochs
         self.device = device
+        self.lambda_gae = 0.95
+
         self.buffer = RolloutBuffer()
 
         self.action_dim = action_dim
@@ -124,66 +146,161 @@ class PPO:
         action = np.random.choice(self.action_dim)
         return action
     # agent选择动作
-    def select_action(self, state):
-        mask = torch.zeros(self.action_dim)
+    def select_action(self, state, deterministic):
+        # mask = torch.zeros(self.action_dim)
         if state.istran != 0:
-                #print("mask action")
-                #print(self.action_dim - 1)
-                mask[self.action_dim - 1] = 1
+            #print("mask action")
+            #print(self.action_dim - 1)
+            mask = torch.zeros(self.action_dim)
+            mask[self.action_dim - 1] = 1
+        else:
+            mask = torch.ones(self.action_dim)
+            mask[self.action_dim - 1] = 0
+
                 
         with torch.no_grad():
             state = state.to_ndarray_normalized()
             state = torch.FloatTensor(state).to(self.device)
-            
-            action, action_logprob, state_val = self.policy_old.act(state, mask)
-            #print('action_inact:', action)
-            
-        self.buffer.states.append(state)
-        self.buffer.actions.append(action)
-        self.buffer.logprobs.append(action_logprob)
-        self.buffer.state_values.append(state_val)
-
-
+            if deterministic:
+                action, action_logprob, state_val = self.policy.act_max(state, mask)
+                #print('action_act:', action)
+                
+            else:
+                action, action_logprob, state_val = self.policy_old.act(state, mask)
+                #print('action_inact:', action)
+                self.buffer.states.append(state)
+                self.buffer.actions.append(action)
+                self.buffer.logprobs.append(action_logprob)
+                self.buffer.state_values.append(state_val)
+        
         return action.item()
 
+    # def update(self):
+    #     # Monte Carlo estimate of returns
+    #     rewards = []
+    #     discounted_reward = 0
+    #     # print('self.buffer.states:', self.buffer.states)
+    #     for reward, is_terminal in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
+    #         if is_terminal:
+    #             discounted_reward = 0
+    #         discounted_reward = reward + (self.gamma * discounted_reward)
+    #         rewards.insert(0, discounted_reward)
+    #     # print('rewards:', rewards)
+    #     # Normalizing the rewards
+    #     rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
+    #     rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
+        
+    #     # convert list to tensor
+    #     old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0)).detach().to(self.device)
+    #     old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach().to(self.device)
+    #     old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(self.device)
+    #     old_state_values = torch.squeeze(torch.stack(self.buffer.state_values, dim=0)).detach().to(self.device)
+
+    #     #print('old_state_values:', old_state_values)
+    #     #print('rewards:', rewards)
+    #     # calculate advantages
+    #     advantages = rewards.detach() - old_state_values.detach()
+
+    #     # Normalizing the advantages (new added)
+    #     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
+        
+    #     actor_loss_epochs = 0
+    #     critic_loss_epochs = 0
+    #     entropy_epochs = 0
+    #     # Optimize policy for K epochs
+    #     for i in range(self.K_epochs):
+    #         # Evaluating old actions and values
+    #         logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
+
+    #         # match state_values tensor dimensions with rewards tensor
+    #         state_values = torch.squeeze(state_values)
+
+    #         # Finding the ratio (pi_theta / pi_theta__old)
+    #         ratios = torch.exp(logprobs - old_logprobs.detach())
+
+    #         # Finding Surrogate Loss
+    #         surr1 = ratios * advantages
+    #         surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+
+    #         # final loss of clipped objective PPO
+           
+    #         actor_loss = -torch.min(surr1, surr2)
+    #         critic_loss = 0.5 * self.MseLoss(state_values, rewards)
+    #         entropy_loss = - 0.05 * dist_entropy
+    #         loss = actor_loss + critic_loss + entropy_loss
+            
+            
+    #         actor_loss_epochs += (actor_loss.detach().cpu().numpy().mean())
+    #         critic_loss_epochs += (critic_loss.detach().cpu().numpy().mean())  
+
+            
+
+    #         entropy_epochs += (dist_entropy.detach().cpu().numpy().mean())
+            
+    #         #打印学习率lr
+    #         actor_lr = self.optimizer.param_groups[0]['lr']
+    #         critic_lr = self.optimizer.param_groups[1]['lr']
+
+    #         # 保存loss
+            
+    #         if (i == self.K_epochs - 1):
+    #             #print('loss:', loss)
+    #             self.buffer.loss.append(loss)
+
+    #         # take gradient step
+    #         self.optimizer.zero_grad()
+    #         loss.mean().backward()
+    #         self.optimizer.step()
+
+    #     # Copy new weights into old policy
+    #     self.policy_old.load_state_dict(self.policy.state_dict())
+
+    #     # clear buffer
+    #     self.buffer.clear()
+
+       
+    #     return actor_loss_epochs/self.K_epochs, critic_loss_epochs/self.K_epochs, entropy_epochs/self.K_epochs, actor_lr, critic_lr
     def update(self):
         # Monte Carlo estimate of returns
         rewards = []
         discounted_reward = 0
-        # print('self.buffer.states:', self.buffer.states)
-        for reward in reversed(self.buffer.rewards):
-            # if is_terminal:
-            #     discounted_reward = 0
+        for reward, is_terminal in zip(reversed(self.buffer.rewards), reversed(self.buffer.is_terminals)):
+            if is_terminal:
+                discounted_reward = 0
             discounted_reward = reward + (self.gamma * discounted_reward)
             rewards.insert(0, discounted_reward)
-        # print('rewards:', rewards)
+
         # Normalizing the rewards
         rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-7)
-        
-        # convert list to tensor
+
+        # Convert list to tensor
         old_states = torch.squeeze(torch.stack(self.buffer.states, dim=0)).detach().to(self.device)
         old_actions = torch.squeeze(torch.stack(self.buffer.actions, dim=0)).detach().to(self.device)
         old_logprobs = torch.squeeze(torch.stack(self.buffer.logprobs, dim=0)).detach().to(self.device)
         old_state_values = torch.squeeze(torch.stack(self.buffer.state_values, dim=0)).detach().to(self.device)
 
-        #print('old_state_values:', old_state_values)
-        #print('rewards:', rewards)
-        # calculate advantages
-        advantages = rewards.detach() - old_state_values.detach()
+        # Compute advantage values using GAE
+        advantages = torch.zeros_like(old_state_values, dtype=torch.float32).to(self.device)
+        for t in reversed(range(len(self.buffer.rewards))):
+            if t == len(self.buffer.rewards) - 1:  # Last index
+                delta = self.buffer.rewards[t] - old_state_values[t].item()
+            else:
+                delta = self.buffer.rewards[t] + self.gamma * old_state_values[t + 1].item() - old_state_values[t].item()
+            advantages[t] = delta + self.gamma * self.lambda_gae * (advantages[t + 1] if t + 1 < len(advantages) else 0)
 
-        # Normalizing the advantages (new added)
+        # Normalize the advantages
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
-        
+
         actor_loss_epochs = 0
         critic_loss_epochs = 0
         entropy_epochs = 0
+        loss_epochs = 0
+
         # Optimize policy for K epochs
         for i in range(self.K_epochs):
             # Evaluating old actions and values
             logprobs, state_values, dist_entropy = self.policy.evaluate(old_states, old_actions)
-
-            # match state_values tensor dimensions with rewards tensor
             state_values = torch.squeeze(state_values)
 
             # Finding the ratio (pi_theta / pi_theta__old)
@@ -193,32 +310,26 @@ class PPO:
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
 
-            # final loss of clipped objective PPO
-           
+            # Final loss of clipped objective PPO
             actor_loss = -torch.min(surr1, surr2)
             critic_loss = 0.5 * self.MseLoss(state_values, rewards)
-            entropy_loss = - 0.05 * dist_entropy
+            entropy_loss = -0.05 * dist_entropy
             loss = actor_loss + critic_loss + entropy_loss
             
-            
-            actor_loss_epochs += (actor_loss.detach().cpu().numpy().mean())
-            critic_loss_epochs += (critic_loss.detach().cpu().numpy().mean())  
+            loss_epochs += loss.detach().cpu().numpy().mean()
+            actor_loss_epochs += actor_loss.detach().cpu().numpy().mean()
+            critic_loss_epochs += critic_loss.detach().cpu().numpy().mean()
+            entropy_epochs += dist_entropy.detach().cpu().numpy().mean()
 
-            
-
-            entropy_epochs += (dist_entropy.detach().cpu().numpy().mean())
-            
-            #打印学习率lr
+            # Print learning rate
             actor_lr = self.optimizer.param_groups[0]['lr']
             critic_lr = self.optimizer.param_groups[1]['lr']
 
-            # 保存loss
-            
-            if (i == self.K_epochs - 1):
-                #print('loss:', loss)
+            # Save loss
+            if i == self.K_epochs - 1:
                 self.buffer.loss.append(loss)
 
-            # take gradient step
+            # Take gradient step
             self.optimizer.zero_grad()
             loss.mean().backward()
             self.optimizer.step()
@@ -226,11 +337,11 @@ class PPO:
         # Copy new weights into old policy
         self.policy_old.load_state_dict(self.policy.state_dict())
 
-        # clear buffer
+        # Clear buffer
         self.buffer.clear()
 
-       
-        return actor_loss_epochs/self.K_epochs, critic_loss_epochs/self.K_epochs, entropy_epochs/self.K_epochs, actor_lr, critic_lr
+        return loss_epochs / self.K_epochs, actor_loss_epochs / self.K_epochs, critic_loss_epochs / self.K_epochs, entropy_epochs / self.K_epochs, actor_lr, critic_lr
+
 
     def save(self, checkpoint_path):
         torch.save(self.policy_old.state_dict(), checkpoint_path)
